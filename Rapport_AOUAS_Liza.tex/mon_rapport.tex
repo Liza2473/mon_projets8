@@ -883,6 +883,20 @@ Bouton & Tactile GPIO0 &
 \label{tab:materiel}
 \end{table}
 
+
+\vspace{0.5cm}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\linewidth]{NodeMCU8266_HW-364A_board_OLED_0.96_USB_C_fig1 (1).png}
+\caption{Sch\'ema de brochage et caract\'eristiques de la carte ESP8266 avec OLED int\'egr\'e}
+\label{fig:pinout_carte}
+\end{figure}
+
+La figure~\ref{fig:pinout_carte} pr\'esente la fiche technique et le brochage (pinout) de la carte de d\'eveloppement s\'electionn\'ee pour ce projet. Cette carte pr\'esente l'avantage d'int\'egrer nativement un \'ecran OLED de 0,96 pouces (contr\^oleur SSD1306), ce qui simplifie le c\^ablage en \'eliminant le besoin de connexions physiques pour l'affichage. L'\'ecran communique en interne via le bus I2C sur les broches SDA (D6/GPIO14) et SCL (D5/GPIO12).
+
+
+
 \section{Sch\'ema de c\^ablage I2C partag\'e}
 
 Le bus \textbf{I2C} (\textit{Inter-Integrated Circuit}, protocole de
