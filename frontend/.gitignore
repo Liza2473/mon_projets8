@@ -1,0 +1,19 @@
+# Node.js
+node_modules/
+dist/
+
+# Logs
+*.log
+
+# Environment
+.env
+
+# VS Code
+.vscode/
+
+# Python
+_pycache_/
+*.pyc
+
+# Arduino
+*.tmp
