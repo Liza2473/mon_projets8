@@ -17,24 +17,33 @@ const char* mqtt_server = "broker.hivemq.com";
 
 const String deviceID = "ESP8266_Liza";
 
-WiFiClient espClient;
+WiFiClient   espClient;
 PubSubClient client(espClient);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-Adafruit_BMP280 bmp;
+Adafruit_BMP280  bmp;
 
-float temp = 0;
-float pres = 0;
+float  temp = 0;
+float  pres = 0;
 
 String screenMode = "ALL";
 String modes[]    = { "ALL", "TEMP", "PRESS", "LIST" };
-int modeIndex     = 0;
-int totalModes    = 4;
+int    modeIndex  = 0;
+int    totalModes = 4;
 
-bool buttonWasPressed         = false;
-unsigned long buttonPressTime = 0;
+bool          buttonWasPressed = false;
+unsigned long buttonPressTime  = 0;
 
-unsigned long lastSend           = 0;
-const unsigned long sendInterval = 5000;
+unsigned long lastSend     = 0;
+unsigned long lastMetaSend = 0;
+unsigned long lastOledRefresh = 0;  // ✅ Nouveau timer pour rafraîchir OLED
+
+const unsigned long sendInterval  = 5000;
+const unsigned long metaInterval  = 30000;
+const unsigned long oledInterval  = 5000;  // ✅ Rafraîchit OLED toutes les 5s
+
+// ✅ Flag pour bloquer le rafraîchissement auto pendant un message temporaire
+bool oledLocked = false;
+unsigned long oledLockUntil = 0;
 
 String lastCustomMessage = "";
 
@@ -61,41 +70,6 @@ void showText(String line1, String line2 = "", String line3 = "") {
 }
 
 // -----------------------------------------------
-// ✅ Publie la metadata (liste des flux) en un seul message JSON
-void publishDescriptions() {
-  String topicDescribe = deviceID + "/metadata/flows";
-
-  String payload = "{";
-  payload += "\"id\":\"" + deviceID + "\",";
-  payload += "\"flows\":[";
-
-  // Flux temperature
-  payload += "{";
-  payload += "\"id\":\"temperature\",";
-  payload += "\"label\":\"Temperature\",";
-  payload += "\"desc\":\"Mesure la temperature ambiante via le capteur BMP280\",";
-  payload += "\"unit\":\"C\"";
-  payload += "},";
-
-  // Flux pression
-  payload += "{";
-  payload += "\"id\":\"pression\",";
-  payload += "\"label\":\"Pression atmospherique\",";
-  payload += "\"desc\":\"Mesure la pression atmospherique via le capteur BMP280\",";
-  payload += "\"unit\":\"hPa\"";
-  payload += "}";
-
-  payload += "]}";
-
-  client.publish(topicDescribe.c_str(), payload.c_str());
-
-  Serial.println("Metadata publiee sur : " + topicDescribe);
-  Serial.println(payload);
-  showText("Metadata OK", "flows envoyes");
-  delay(1000);
-}
-
-// -----------------------------------------------
 void updateOLED() {
   display.clearDisplay();
   display.setTextColor(WHITE);
@@ -112,9 +86,7 @@ void updateOLED() {
       display.println("Status: N/A");
       display.println("Hors plage");
     }
-    if (lastCustomMessage != "") {
-      display.println(tronquer(lastCustomMessage));
-    }
+    if (lastCustomMessage != "") display.println(tronquer(lastCustomMessage));
   }
 
   else if (screenMode == "PRESS") {
@@ -127,9 +99,7 @@ void updateOLED() {
       display.println("Status: N/A");
       display.println("Hors plage");
     }
-    if (lastCustomMessage != "") {
-      display.println(tronquer(lastCustomMessage));
-    }
+    if (lastCustomMessage != "") display.println(tronquer(lastCustomMessage));
   }
 
   else if (screenMode == "LIST") {
@@ -146,17 +116,53 @@ void updateOLED() {
   }
 
   else {
+    // ALL
     display.println("=== ALL FLUX ===");
     display.println(fluxTemp()  ? tronquer("T: " + String(temp, 2) + " C")   : "T: N/A");
     display.println(fluxPress() ? tronquer("P: " + String(pres, 1) + " hPa") : "P: N/A");
     display.println("----------------");
     display.println("MQTT: OK");
-    if (lastCustomMessage != "") {
-      display.println(tronquer(lastCustomMessage));
-    }
+    if (lastCustomMessage != "") display.println(tronquer(lastCustomMessage));
   }
 
   display.display();
+}
+
+// -----------------------------------------------
+void publishDescriptions() {
+  String topicDescribe = deviceID + "/metadata/flows";
+
+  String payload = "{";
+  payload += "\"id\":\"" + deviceID + "\",";
+  payload += "\"flows\":[";
+  payload += "{\"id\":\"temperature\",\"label\":\"Temperature\",\"desc\":\"Capteur BMP280\",\"unit\":\"C\"},";
+  payload += "{\"id\":\"pression\",\"label\":\"Pression\",\"desc\":\"Capteur BMP280\",\"unit\":\"hPa\"}";
+  payload += "]}";
+
+  bool ok = client.publish(topicDescribe.c_str(), payload.c_str(), true);
+
+  if (ok) {
+    Serial.println("Metadata OK");
+  } else {
+    Serial.println("ERREUR metadata");
+  }
+}
+
+// -----------------------------------------------
+void publishData() {
+  String ts = String(millis());
+
+  String topicTemp = deviceID + "/datalog/" + ts + "/temperature";
+  String topicPres = deviceID + "/datalog/" + ts + "/pression";
+
+  String msgTemp = "{\"value\":" + String(temp, 2) + ",\"unit\":\"C\"}";
+  String msgPres = "{\"value\":" + String(pres, 1) + ",\"unit\":\"hPa\"}";
+
+  client.publish(topicTemp.c_str(), msgTemp.c_str());
+  client.publish(topicPres.c_str(), msgPres.c_str());
+
+  Serial.println("Temp: " + String(temp, 2) + " C");
+  Serial.println("Pres: " + String(pres, 1) + " hPa");
 }
 
 // -----------------------------------------------
@@ -170,62 +176,61 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   Serial.println("Commande recue: " + command);
 
-  // ✅ Commande DESCRIBE → republier la metadata
+  // DESCRIBE — republier les métadonnées
   if (command == "DESCRIBE") {
-    Serial.println("DESCRIBE recu → republication metadata flows");
     publishDescriptions();
-    updateOLED();
+    // ✅ Ne change pas screenMode, juste confirme brièvement
+    showText("DESCRIBE OK", "Metadata envoye");
+    oledLocked    = true;
+    oledLockUntil = millis() + 2000;
     return;
   }
 
+  // MSG: — message personnalisé
   if (command.startsWith("MSG:")) {
     String msg = command.substring(4);
     msg.trim();
     lastCustomMessage = msg;
-    Serial.println("Message affiche: " + tronquer(msg));
     updateOLED();
     return;
   }
 
+  // ✅ TEMP? PRESS? — affiche 3s PUIS revient au screenMode actuel
   if (command.endsWith("?")) {
     String nomFlux = command;
     nomFlux.replace("?", "");
     nomFlux.trim();
 
     if (nomFlux == "TEMP" || nomFlux == "TEMPERATURE") {
-      showText(
-        "Flux temperature",
+      showText("Flux temperature",
         fluxTemp() ? ">>> OUI <<<" : ">>> NON <<<",
-        fluxTemp() ? "Disponible OK" : "Capteur hors plage"
-      );
+        fluxTemp() ? "Disponible OK" : "Hors plage");
     }
     else if (nomFlux == "PRESS" || nomFlux == "PRESSION") {
-      showText(
-        "Flux pression",
+      showText("Flux pression",
         fluxPress() ? ">>> OUI <<<" : ">>> NON <<<",
-        fluxPress() ? "Disponible OK" : "Capteur hors plage"
-      );
+        fluxPress() ? "Disponible OK" : "Hors plage");
     }
     else {
       showText("Flux inconnu", tronquer(nomFlux), ">>> NON <<<");
     }
-
-    delay(3000);
-    updateOLED();
+    //  Lock l'OLED 3s puis updateOLED remet le bon screenMode
+    oledLocked    = true;
+    oledLockUntil = millis() + 3000;
     return;
   }
 
+  //  STATUS — affiche 3s puis revient au screenMode actuel
   if (command == "STATUS") {
-    showText(
-      "=== STATUS ===",
+    showText("=== STATUS ===",
       fluxTemp()  ? "T: OK " + String(temp, 1) + "C"    : "T: N/A",
-      fluxPress() ? "P: OK " + String(pres, 0) + " hPa" : "P: N/A"
-    );
-    delay(3000);
-    updateOLED();
+      fluxPress() ? "P: OK " + String(pres, 0) + " hPa" : "P: N/A");
+    oledLocked    = true;
+    oledLockUntil = millis() + 3000;
     return;
   }
 
+  // ✅ Commandes de mode — changent screenMode et RESTENT
   if (command == "ALL") {
     screenMode = "ALL";
     modeIndex  = 0;
@@ -243,12 +248,15 @@ void callback(char* topic, byte* payload, unsigned int length) {
     modeIndex  = 3;
   }
   else {
+    // Commande inconnue — affiche 3s puis revient
     showText("Flux introuvable", tronquer(command), ">>> NON <<<");
-    delay(3000);
-    updateOLED();
+    oledLocked    = true;
+    oledLockUntil = millis() + 3000;
     return;
   }
 
+  // Mise à jour immédiate de l'écran avec le nouveau mode
+  oledLocked = false;
   updateOLED();
 }
 
@@ -276,40 +284,9 @@ void handleButton() {
     }
 
     delay(200);
+    oledLocked = false;
     updateOLED();
   }
-}
-
-// -----------------------------------------------
-void publishData() {
-  String topicTemp = deviceID + "/datalog/temperature";
-  String topicPres = deviceID + "/datalog/pression";
-
-  String messageTemp = "{";
-  messageTemp += "\"id\":\"" + deviceID + "\",";
-  messageTemp += "\"messageId\":\"temp-" + String(millis()) + "\",";
-  messageTemp += "\"datalog\":{";
-  messageTemp += "\"type\":\"temperature\",";
-  messageTemp += "\"value\":" + String(temp, 2) + ",";
-  messageTemp += "\"unit\":\"C\",";
-  messageTemp += "\"timestamp\":" + String(millis());
-  messageTemp += "}}";
-
-  String messagePres = "{";
-  messagePres += "\"id\":\"" + deviceID + "\",";
-  messagePres += "\"messageId\":\"press-" + String(millis()) + "\",";
-  messagePres += "\"datalog\":{";
-  messagePres += "\"type\":\"pression\",";
-  messagePres += "\"value\":" + String(pres, 1) + ",";
-  messagePres += "\"unit\":\"hPa\",";
-  messagePres += "\"timestamp\":" + String(millis());
-  messagePres += "}}";
-
-  client.publish(topicTemp.c_str(), messageTemp.c_str());
-  client.publish(topicPres.c_str(), messagePres.c_str());
-
-  Serial.println("Temp: " + String(temp, 2) + " C");
-  Serial.println("Pres: " + String(pres, 1) + " hPa");
 }
 
 // -----------------------------------------------
@@ -323,15 +300,14 @@ void reconnectMQTT() {
     if (client.connect(clientId.c_str())) {
       Serial.println("connecte !");
 
-      // Souscription aux commandes
       String topicCmd = deviceID + "/screen/command";
       client.subscribe(topicCmd.c_str());
       Serial.println("Abonne a: " + topicCmd);
 
-      // ✅ Publier la metadata dès la connexion
       publishDescriptions();
+      lastMetaSend = millis();
 
-      showText("MQTT OK", "Commandes actives", tronquer(topicCmd));
+      showText("MQTT OK", "Commandes actives");
       delay(1000);
 
     } else {
@@ -356,10 +332,12 @@ void setup() {
     while (1);
   }
 
-  if (!bmp.begin(0x77)) {
+  if (!bmp.begin(0x76) && !bmp.begin(0x77)) {
     Serial.println("BMP280 non detecte !");
+    showText("BMP280 ERR", "Verif branchement");
     while (1);
   }
+  Serial.println("BMP280 detecte OK !");
 
   showText("=== IoT Liza ===", "Connexion WiFi");
 
@@ -390,11 +368,35 @@ void loop() {
   client.loop();
   handleButton();
 
+  //  Republication métadonnées périodique
+  if (millis() - lastMetaSend >= metaInterval) {
+    lastMetaSend = millis();
+    publishDescriptions();
+    Serial.println("Metadata republication periodique");
+  }
+
+  //  Lecture capteur + publication MQTT
   if (millis() - lastSend >= sendInterval) {
     lastSend = millis();
     temp = bmp.readTemperature();
     pres = bmp.readPressure() / 100.0F;
-    updateOLED();
     publishData();
+    //  NE PAS appeler updateOLED() ici
+    //    L'OLED se rafraîchit via son propre timer ci-dessous
+  }
+
+  //  Rafraîchissement OLED — seulement si pas locké
+  if (millis() - lastOledRefresh >= oledInterval) {
+    lastOledRefresh = millis();
+
+    // Si le lock est expiré, on déverrouille
+    if (oledLocked && millis() >= oledLockUntil) {
+      oledLocked = false;
+    }
+
+    // Rafraîchit l'écran seulement si pas de message temporaire
+    if (!oledLocked) {
+      updateOLED();
+    }
   }
 }
