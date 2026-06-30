@@ -5,7 +5,7 @@
       <span class="footer-item">{{ backendUrl }}</span>
     </div>
     <div class="footer-center">
-      © 2026 — IoT Controller • AOUAS Liza — Master IoT 2025/2026
+      © 2026 — IoT Controller • AOUAS Liza — Master MTI 2025/2026
     </div>
     <div class="footer-right">
       <span class="footer-item">v1.0.0</span>
